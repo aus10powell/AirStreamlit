@@ -218,10 +218,13 @@ try:
             'PM10': list(pm10_values)
         })
 
-        # Create the combined plot
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=False, vertical_spacing=0.1,
-                            subplot_titles=("Air Quality Measurements", "Hourly Distribution (Last 24 Hours)"),
-                            row_heights=[0.7, 0.3])
+
+        # Create the combined plot with three subplots
+        fig = make_subplots(rows=3, cols=1, shared_xaxes=False, vertical_spacing=0.1,
+                            subplot_titles=("Air Quality Measurements", 
+                                            "Hourly Distribution (Last 24 Hours)",
+                                            "Daily Distribution (Last 7 Days)"),
+                            row_heights=[0.5, 0.25, 0.25])
 
         # Trim outliers for the main chart
         trimmed_df_pm25, has_outliers_pm25 = trim_outliers(df, 'PM2.5')
@@ -268,16 +271,16 @@ try:
                 row=1, col=1
             )
 
-        # Prepare data for box plots
+        # Prepare data for hourly box plots
         end_time = datetime.now()
-        start_time = end_time - timedelta(days=1)
+        start_time = end_time - timedelta(hours=24)
         hourly_data = historical_data[(historical_data['time'] > start_time) & (historical_data['time'] <= end_time)]
         hourly_data['hour'] = hourly_data['time'].dt.floor('H')
 
         # Create a list of hour labels for x-axis
         hour_labels = [(start_time + timedelta(hours=i)).strftime('%Y-%m-%d %H:00') for i in range(24)]
 
-        # Trim outliers and add box plots
+        # Trim outliers and add hourly box plots
         for i, (pollutant, color) in enumerate([('PM2.5', 'blue'), ('PM10', 'lightblue')]):
             trimmed_data, has_outliers = trim_outliers(hourly_data, pollutant)
             
@@ -300,9 +303,41 @@ try:
                     row=2, col=1
                 )
 
+        # Prepare data for weekly box plots
+        end_time = datetime.now()
+        start_time = end_time - timedelta(days=7)
+        weekly_data = historical_data[(historical_data['time'] > start_time) & (historical_data['time'] <= end_time)]
+        weekly_data['date'] = weekly_data['time'].dt.date
+
+        # Create a list of date labels for x-axis
+        date_labels = [(start_time + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
+
+        # Trim outliers and add weekly box plots
+        for i, (pollutant, color) in enumerate([('PM2.5', 'blue'), ('PM10', 'lightblue')]):
+            trimmed_data, has_outliers = trim_outliers(weekly_data, pollutant)
+            
+            fig.add_trace(go.Box(
+                y=trimmed_data[pollutant],
+                x=trimmed_data['date'],
+                name=pollutant,
+                marker_color=color,
+                showlegend=False,
+                offsetgroup=i  # This will offset the boxes side by side
+            ), row=3, col=1)
+            
+            if has_outliers:
+                fig.add_annotation(
+                    x=1, y=1, 
+                    text=f"* Extreme values present in {pollutant}", 
+                    showarrow=False, 
+                    xref="x3 domain", yref="y3 domain",
+                    font=dict(size=10, color="red"),
+                    row=3, col=1
+                )
+
         # Update layout
         fig.update_layout(
-            height=800,
+            height=1000,  # Increased height to accommodate the new subplot
             showlegend=True,
             legend=dict(
                 orientation="v",
@@ -314,6 +349,7 @@ try:
             ),
             yaxis_title="Concentration (µg/m³)",
             yaxis2_title="Concentration (µg/m³)",
+            yaxis3_title="Concentration (µg/m³)",
             boxmode='group'  # This ensures the boxes are grouped side by side
         )
 
@@ -326,6 +362,14 @@ try:
             ticktext=[datetime.strptime(label, '%Y-%m-%d %H:00').strftime('%I %p') for label in hour_labels],
             tickangle=45,
             row=2, col=1
+        )
+        fig.update_xaxes(
+            title_text="Date (Last 7 Days)", 
+            tickmode='array',
+            tickvals=date_labels,
+            ticktext=[datetime.strptime(label, '%Y-%m-%d').strftime('%a, %b %d') for label in date_labels],
+            tickangle=45,
+            row=3, col=1
         )
         
         # Update y-axis range for the main plot based on trimmed data
