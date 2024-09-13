@@ -10,8 +10,6 @@ import threading
 from datetime import datetime, timedelta
 import os
 
-
-
 # Configure the serial port
 ser = serial.Serial('/dev/ttyUSB0')  # You might need to change this to the correct port
 ser.baudrate = 9600
@@ -25,6 +23,11 @@ times = deque(maxlen=max_points)
 pm25_values = deque(maxlen=max_points)
 pm10_values = deque(maxlen=max_points)
 
+# Create a buffer for 15 seconds of data
+buffer_times = []
+buffer_pm25 = []
+buffer_pm10 = []
+
 # Flag to control the sensor reading thread
 stop_thread = threading.Event()
 
@@ -33,16 +36,23 @@ def append_to_parquet(new_data):
     Append new data to the Parquet file.
     """
     try:
+        # Convert time column to string
+        new_data['time'] = new_data['time'].astype(str)
+        
         # Read existing data
-        existing_data = pd.read_parquet(HISTORY_FILE)
-        # Append new data
-        updated_data = pd.concat([existing_data, new_data], ignore_index=True)
-    except FileNotFoundError:
-        # If file doesn't exist, create new DataFrame
-        updated_data = new_data
+        if os.path.exists(HISTORY_FILE):
+            existing_data = pd.read_parquet(HISTORY_FILE)
+            # Convert existing time column to string if it's not already
+            existing_data['time'] = existing_data['time'].astype(str)
+            # Append new data
+            updated_data = pd.concat([existing_data, new_data], ignore_index=True)
+        else:
+            updated_data = new_data
 
-    # Write updated data to Parquet file
-    updated_data.to_parquet(HISTORY_FILE, engine='pyarrow', index=False)
+        # Write updated data to Parquet file
+        updated_data.to_parquet(HISTORY_FILE, engine='pyarrow', index=False)
+    except Exception as e:
+        print(f"Error appending to Parquet file: {e}")
 
 def read_pm_values():
     """
@@ -64,19 +74,11 @@ def sensor_thread():
     while not stop_thread.is_set():
         pm25, pm10 = read_pm_values()
         current_time = datetime.now()
-        times.append(current_time)
-        pm25_values.append(pm25)
-        pm10_values.append(pm10)
         
-        # Create a DataFrame with new data
-        new_data = pd.DataFrame({
-            'time': [current_time],
-            'PM2.5': [pm25],
-            'PM10': [pm10]
-        })
-        
-        # Append to Parquet file
-        append_to_parquet(new_data)
+        # Add data to the buffer
+        buffer_times.append(current_time)
+        buffer_pm25.append(pm25)
+        buffer_pm10.append(pm10)
         
         time.sleep(1)
 
@@ -90,8 +92,7 @@ def calculate_median(times_deque, values_deque, time_range):
     values_copy = list(values_deque)
     
     filtered_values = [v for t, v in zip(times_copy, values_copy) if current_time - t <= time_range]
-    return  np.nanmedian(filtered_values) #sum(filtered_values) / len(filtered_values) if filtered_values else 0
-
+    return np.nanmedian(filtered_values)
 
 def trim_outliers(data, column):
     """
@@ -106,21 +107,6 @@ def trim_outliers(data, column):
     has_outliers = len(data) != len(trimmed_data)
     return trimmed_data, has_outliers
 
-# def load_historical_data():
-#     if os.path.exists(HISTORY_FILE):
-#         # Read the CSV file with the header
-#         df = pd.read_csv(HISTORY_FILE)
-        
-#         # Convert the 'time' column to datetime
-#         df['time'] = pd.to_datetime(df['time'], format='%Y-%m-%d %H:%M:%S.%f')
-        
-#         return df
-#     else:
-#         # Create the file if it doesn't exist
-#         with open(HISTORY_FILE, 'w') as f:
-#             f.write("time,PM2.5,PM10\n")
-#         return pd.DataFrame(columns=['time', 'PM2.5', 'PM10'])
-    
 def load_historical_data():
     """
     Load historical data from Parquet file.
@@ -160,47 +146,56 @@ def calculate_average(times_deque, values_deque, time_range):
 
     return sum(trimmed_values) / len(trimmed_values) if trimmed_values else 0
 
-
-# Load historical data
-historical_data = load_historical_data()
-print("historical_data head: ", historical_data.head())
-print("historical_data tail: ", historical_data.tail())
-print("Load historical data with date range: ", historical_data['time'].min(), historical_data['time'].max())
-
-# Populate deques with historical data (last hour)
-last_hour = datetime.now() - timedelta(hours=3)
-recent_data = historical_data[historical_data['time'] > last_hour]
-times.extend(recent_data['time'])
-pm25_values.extend(recent_data['PM2.5'])
-pm10_values.extend(recent_data['PM10'])
-
-
 # Streamlit app
 st.title('Indoor Air Quality Monitor')
 
 # Load historical data
 historical_data = load_historical_data()
 
-# Populate deques with historical data (last hour)
-last_hour = datetime.now() - timedelta(hours=1)
-recent_data = historical_data[historical_data['time'] > last_hour]
-times.extend(recent_data['time'])
-pm25_values.extend(recent_data['PM2.5'])
-pm10_values.extend(recent_data['PM10'])
-
 # Create placeholders for chart and averages
 chart_placeholder = st.empty()
 averages_placeholder = st.empty()
-
 
 # Start the sensor thread automatically
 thread = threading.Thread(target=sensor_thread)
 thread.start()
 
-
 # Main loop
 try:
     while True:
+        # Wait for 15 seconds to accumulate data
+        time.sleep(15)
+        
+        # Process the buffered data
+        if buffer_times:
+            # Create a DataFrame from the buffer
+            new_data = pd.DataFrame({
+                'time': buffer_times,
+                'PM2.5': buffer_pm25,
+                'PM10': buffer_pm10
+            })
+            
+            # Append to Parquet file
+            append_to_parquet(new_data)
+            
+            # Clear the buffer
+            buffer_times.clear()
+            buffer_pm25.clear()
+            buffer_pm10.clear()
+            
+            # Reload historical data
+            historical_data = load_historical_data()
+            
+            # Update the deques with the latest hour of data
+            last_hour = datetime.now() - timedelta(hours=1)
+            recent_data = historical_data[historical_data['time'] > last_hour]
+            times.clear()
+            pm25_values.clear()
+            pm10_values.clear()
+            times.extend(recent_data['time'])
+            pm25_values.extend(recent_data['PM2.5'])
+            pm10_values.extend(recent_data['PM10'])
+
         # Calculate averages
         hour_ago = timedelta(hours=1)
         day_ago = timedelta(hours=24)
@@ -215,7 +210,6 @@ try:
         Past 24 hours average - PM2.5: {pm25_avg_24h:.2f} µg/m³, PM10: {pm10_avg_24h:.2f} µg/m³
         """
         averages_placeholder.write(averages_text)
-
 
         # Create a DataFrame from the deques
         df = pd.DataFrame({
@@ -284,17 +278,22 @@ try:
         hour_labels = [(start_time + timedelta(hours=i)).strftime('%Y-%m-%d %H:00') for i in range(24)]
 
         # Trim outliers and add box plots
-        for pollutant, color in [('PM2.5', 'blue'), ('PM10', 'lightblue')]:
+        for i, (pollutant, color) in enumerate([('PM2.5', 'blue'), ('PM10', 'lightblue')]):
             trimmed_data, has_outliers = trim_outliers(hourly_data, pollutant)
             
             fig.add_trace(go.Box(
-                y=trimmed_data[pollutant], x=trimmed_data['hour'],
-                name=pollutant, marker_color=color, showlegend=False), row=2, col=1)
+                y=trimmed_data[pollutant],
+                x=trimmed_data['hour'],
+                name=pollutant,
+                marker_color=color,
+                showlegend=False,
+                offsetgroup=i  # This will offset the boxes side by side
+            ), row=2, col=1)
             
             if has_outliers:
                 fig.add_annotation(
                     x=1, y=1, 
-                    text="* Extreme values present", 
+                    text=f"* Extreme values present in {pollutant}", 
                     showarrow=False, 
                     xref="x2 domain", yref="y2 domain",
                     font=dict(size=10, color="red"),
@@ -314,7 +313,8 @@ try:
                 bgcolor="rgba(255, 255, 255, 0.5)"  # Semi-transparent background
             ),
             yaxis_title="Concentration (µg/m³)",
-            yaxis2_title="Concentration (µg/m³)"
+            yaxis2_title="Concentration (µg/m³)",
+            boxmode='group'  # This ensures the boxes are grouped side by side
         )
 
         # Update x-axes
@@ -334,8 +334,6 @@ try:
 
         # Update the chart
         chart_placeholder.plotly_chart(fig, use_container_width=True)
-
-        time.sleep(1)
 
 except KeyboardInterrupt:
     print("Measurement stopped by user")
