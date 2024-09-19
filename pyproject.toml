@@ -1,14 +1,18 @@
 [tool.poetry]
 name = "airstreamlit"
 version = "0.1.0"
-description = "A streamlit app that display air quality information"
-authors = ["Austin Powell <phystron@gmail.com>"]
-license = "MIT"
+description = "a dashboard for air quality"
+authors = ["Your Name <you@example.com>"]
+license = "n"
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.12"
+python = "3.10, 3.11, 3.12"
 streamlit = "^1.38.0"
+plotly = "^5.24.1"
+pandas = "^2.2.2"
+serial = "^0.0.97"
+numpy = "^2.1.1"
 
 
 [build-system]
